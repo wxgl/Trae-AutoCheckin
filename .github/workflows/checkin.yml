@@ -20,6 +20,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Restore token cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .trae_token_cache.json
+          key: trae-token-${{ github.run_id }}
+          restore-keys: |
+            trae-token-
       - name: Run checkin (all accounts)
         env:
           TRAE_ACCOUNTS: ${{ secrets.TRAE_ACCOUNTS }}
@@ -30,6 +37,12 @@ jobs:
           TRAE_DEVICE_PUB_PEM: ${{ secrets.TRAE_DEVICE_PUB_PEM }}
           TRAE_JITTER: "1"
         run: python trae_checkin.py
+      - name: Save token cache
+        if: always() && hashFiles('.trae_token_cache.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .trae_token_cache.json
+          key: trae-token-${{ github.run_id }}
       - name: Notify on failure
         if: failure()
         run: echo "::warning::签到脚本执行失败，请检查 secrets 和日志"
