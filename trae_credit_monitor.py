@@ -314,12 +314,32 @@ def explain_refresh_err(text):
 
 
 def _jwt_exp(token):
+    """读 JWT 到期（秒）：优先标准 exp，其次中国版自定义 TokenExpireAt / tokenExpireAt。
+
+    中国版的令牌把到期写在自定义声明里且可能是**字符串**（issue #263 实测），
+    旧的只看 exp 的读法会静默落 0 —— 缓存里的有效期与续期节奏一起坏。
+    声明值数字 / 字符串都认，秒与毫秒按量级归一；读不到返回 0。
+    """
     try:
         parts = token.split('.')
         pad = parts[1] + '=' * (-len(parts[1]) % 4)
-        return int(json.loads(base64.urlsafe_b64decode(pad)).get('exp', 0))
+        payload = json.loads(base64.urlsafe_b64decode(pad))
     except Exception:
         return 0
+    for claim in ('exp', 'TokenExpireAt', 'tokenExpireAt'):
+        raw = payload.get(claim)
+        if raw is None or raw == '':
+            continue
+        try:
+            value = float(str(raw).strip())
+        except Exception:
+            continue
+        if value <= 0:
+            continue
+        if value > 100000000000:      # 毫秒量级 → 秒
+            value = value / 1000.0
+        return int(value)
+    return 0
 
 
 def _jwt_uid(token):
@@ -335,6 +355,37 @@ def stable_device_id(seed):
     h = hashlib.md5(('trae:' + seed).encode('utf-8')).hexdigest()
     return str(int(h[:15], 16))[:16].rjust(16, '0')
 
+
+def real_device_id():
+    """本机 Trae 客户端注册过的真实设备号（storage.json 键名里的 Aha 号），取不到返回 ''。"""
+    try:
+        home = os.path.expanduser('~')
+        names = ('Trae CN', 'TRAE SOLO CN', 'TRAE SOLO', 'Trae')
+        sub = ('User', 'globalStorage', 'storage.json')
+        base = os.environ.get('APPDATA') or os.path.join(home, 'AppData', 'Roaming')
+        cands = [os.path.join(base, n, *sub) for n in names]
+        cands += [os.path.join(home, 'Library', 'Application Support', n, *sub) for n in names]
+        cands += [os.path.join(home, '.config', n, *sub) for n in ('trae', 'trae-cn')]
+        env = os.environ.get('TRAE_STORAGE_PATH', '').strip()
+        if env:
+            cands.insert(0, env)
+        for p in cands:
+            if not os.path.isfile(p):
+                continue
+            with open(p, encoding='utf-8') as fh:
+                s = json.load(fh)
+            for k, v in s.items():
+                if k.startswith('iCubeAuthInfo://icube-dc:'):
+                    d = k[len('iCubeAuthInfo://icube-dc:'):].strip()
+                    if d.isdigit() and 12 <= len(d) <= 20:
+                        return d
+                elif k.rstrip(':') == 'iCubeAuthInfo://icube-dc':
+                    d = str(v).strip()
+                    if d.isdigit() and 12 <= len(d) <= 20:
+                        return d
+    except Exception:
+        pass
+    return ''
 
 def persist_refresh_token(uid, new_rt, seed_rt):
     """把续期后的最新 refreshToken 回写到账号 JSON（需设 TRAE_ACCOUNT_DIR）。"""
@@ -366,7 +417,7 @@ def persist_refresh_token(uid, new_rt, seed_rt):
 
 def get_token(idx, rt_env, did_env, cache, force_refresh=False, keys=None, at_env=''):
     key = str(idx)
-    did = did_env or stable_device_id(rt_env)
+    did = real_device_id() or did_env or stable_device_id(rt_env)
     ent = cache.get(key) or {}
     at = ent.get('accessToken')
     rt_cache = ent.get('refreshToken')
